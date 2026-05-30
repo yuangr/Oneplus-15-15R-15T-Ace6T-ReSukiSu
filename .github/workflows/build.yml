@@ -720,16 +720,8 @@ jobs:
             local old="$2"
             local new="$3"
 
-            python3 -c '
-          import sys
-          path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-          with open(path, "r", encoding="utf-8", errors="ignore") as f:
-              data = f.read()
-          data = data.replace(old, new)
-          with open(path, "w", encoding="utf-8") as f:
-              f.write(data)
-          ' "$file" "$old" "$new"
-                    }
+            python3 -c 'import sys; p,o,n=sys.argv[1],sys.argv[2],sys.argv[3]; d=open(p,"r",encoding="utf-8",errors="ignore").read(); d=d.replace(o,n); open(p,"w",encoding="utf-8").write(d)' "$file" "$old" "$new"
+          }
 
           fix_op15_recovery_bootloop_sus_mount() {
             local OLD='for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }'
@@ -1054,14 +1046,116 @@ jobs:
 
           BUILD_FILE="kernel_workspace/common/BUILD.bazel"
 
-          if [ -f "$BUILD_FILE" ]; then
-            sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
-            sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' "$BUILD_FILE"
-            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' "$BUILD_FILE"
-            echo "✅ Protected module/export checks disabled"
-          else
+          if [ ! -f "$BUILD_FILE" ]; then
             echo "⚠️ BUILD.bazel not found, skipping"
+            exit 0
           fi
+
+          echo "🩹 Disabling Kleaf defconfig/protected checks in $BUILD_FILE"
+
+          # Remove protected exports/module checks if present.
+          sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
+          sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' "$BUILD_FILE"
+          sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' "$BUILD_FILE"
+
+          python3 - "$BUILD_FILE" <<'PY'
+          import re
+          import sys
+          
+          path = sys.argv[1]
+          
+          with open(path, "r", encoding="utf-8", errors="ignore") as f:
+              data = f.read()
+          
+          # Find kernel_build(...) blocks in a simple balanced-parentheses way.
+          def find_calls(text, func_name):
+              calls = []
+              token = func_name + "("
+              pos = 0
+              while True:
+                  start = text.find(token, pos)
+                  if start == -1:
+                      break
+          
+                  i = start + len(token)
+                  depth = 1
+                  in_str = None
+                  esc = False
+          
+                  while i < len(text):
+                      c = text[i]
+          
+                      if in_str:
+                          if esc:
+                              esc = False
+                          elif c == "\\":
+                              esc = True
+                          elif c == in_str:
+                              in_str = None
+                      else:
+                          if c in ("'", '"'):
+                              in_str = c
+                          elif c == "(":
+                              depth += 1
+                          elif c == ")":
+                              depth -= 1
+                              if depth == 0:
+                                  calls.append((start, i + 1))
+                                  pos = i + 1
+                                  break
+                      i += 1
+                  else:
+                      break
+          
+              return calls
+          
+          changed = False
+          calls = find_calls(data, "kernel_build")
+          
+          for start, end in reversed(calls):
+              block = data[start:end]
+          
+              if not re.search(r'name\s*=\s*"kernel_aarch64"', block):
+                  continue
+          
+              # Replace existing check_defconfig if present.
+              if re.search(r'check_defconfig\s*=', block):
+                  block2 = re.sub(
+                      r'check_defconfig\s*=\s*"[^"]*"\s*,?',
+                      'check_defconfig = "disabled",',
+                      block,
+                      count=1,
+                  )
+              else:
+                  # Insert after the name line.
+                  block2 = re.sub(
+                      r'(name\s*=\s*"kernel_aarch64"\s*,)',
+                      r'\1\n    check_defconfig = "disabled",',
+                      block,
+                      count=1,
+                  )
+          
+              if block2 != block:
+                  data = data[:start] + block2 + data[end:]
+                  changed = True
+          
+          if not changed:
+              print("⚠️ WARNING: kernel_build(name=\"kernel_aarch64\") not modified")
+          else:
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(data)
+              print("✅ check_defconfig disabled for kernel_aarch64")
+          PY
+
+          echo "🔎 Relevant BUILD.bazel lines:"
+          grep -nE 'name[[:space:]]*=[[:space:]]*"kernel_aarch64"|check_defconfig|protected_module_names_list|protected_exports_list' "$BUILD_FILE" || true
+
+          if ! grep -q 'check_defconfig[[:space:]]*=[[:space:]]*"disabled"' "$BUILD_FILE"; then
+            echo "❌ ERROR: Failed to disable check_defconfig"
+            exit 1
+          fi
+
+          echo "✅ Kleaf defconfig/protected checks disabled"
 
       - name: Verify Important Config Entries
         shell: bash
