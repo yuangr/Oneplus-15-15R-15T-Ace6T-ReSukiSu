@@ -747,6 +747,7 @@ jobs:
           echo "⏭️ Skipping ksu_toolkit.patch (SELinux undefined-symbol issue on android16-6.12)"
 
       - name: Fix SELinux hide unresolved symbols
+        if: ${{ inputs.SUSFS_META != '-1' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -760,114 +761,18 @@ jobs:
             exit 0
           fi
 
-          echo "🔍 Checking for broken SELinux hide hook symbols..."
+          echo "🩹 Restoring original SELinuxFS file to avoid broken SUSFS hide hook..."
+          git restore "$SELINUXFS" || git checkout HEAD -- "$SELINUXFS"
+          echo "✅ Restored $SELINUXFS from kernel source"
 
-          if grep -qE 'ksu_selinux_hide_enabled|fake_status|initialize_fake_status|fake_status_initialize_key|my_sel_open_handle_status' "$SELINUXFS"; then
-            echo "🩹 Found SELinux hide hook references. Removing broken hook safely..."
-
-            FIX_SCRIPT="${RUNNER_TEMP:-/tmp}/fix_selinux_hide.py"
-
-            {
-              printf '%s\n' 'from pathlib import Path'
-              printf '%s\n' ''
-              printf '%s\n' 'p = Path("security/selinux/selinuxfs.c")'
-              printf '%s\n' 's = p.read_text()'
-              printf '%s\n' ''
-              printf '%s\n' 'def remove_function_by_name(src, name):'
-              printf '%s\n' '    idx = src.find(name)'
-              printf '%s\n' '    if idx == -1:'
-              printf '%s\n' '        return src'
-              printf '%s\n' ''
-              printf '%s\n' '    # Find the start of the containing function declaration.'
-              printf '%s\n' '    start = src.rfind("\n", 0, idx)'
-              printf '%s\n' '    while start > 0:'
-              printf '%s\n' '        prev = src.rfind("\n", 0, start)'
-              printf '%s\n' '        line = src[prev + 1:start].strip()'
-              printf '%s\n' '        if line.startswith("static ") or line.startswith("int ") or line.startswith("ssize_t ") or line.startswith("void "):'
-              printf '%s\n' '            start = prev + 1'
-              printf '%s\n' '            break'
-              printf '%s\n' '        start = prev'
-              printf '%s\n' '    else:'
-              printf '%s\n' '        start = max(0, start)'
-              printf '%s\n' ''
-              printf '%s\n' '    brace = src.find("{", idx)'
-              printf '%s\n' '    if brace == -1:'
-              printf '%s\n' '        return src'
-              printf '%s\n' ''
-              printf '%s\n' '    depth = 0'
-              printf '%s\n' '    end = brace'
-              printf '%s\n' '    i = brace'
-              printf '%s\n' '    while i < len(src):'
-              printf '%s\n' '        c = src[i]'
-              printf '%s\n' '        if c == "{":'
-              printf '%s\n' '            depth += 1'
-              printf '%s\n' '        elif c == "}":'
-              printf '%s\n' '            depth -= 1'
-              printf '%s\n' '            if depth == 0:'
-              printf '%s\n' '                end = i + 1'
-              printf '%s\n' '                break'
-              printf '%s\n' '        i += 1'
-              printf '%s\n' ''
-              printf '%s\n' '    while end < len(src) and src[end] in " \t\r\n":'
-              printf '%s\n' '        end += 1'
-              printf '%s\n' ''
-              printf '%s\n' '    return src[:start] + "\n" + src[end:]'
-              printf '%s\n' ''
-              printf '%s\n' '# Remove the injected wrapper function completely.'
-              printf '%s\n' 's = remove_function_by_name(s, "my_sel_open_handle_status")'
-              printf '%s\n' ''
-              printf '%s\n' '# Restore any file_operations references back to the original handler.'
-              printf '%s\n' 's = s.replace("my_sel_open_handle_status", "sel_open_handle_status")'
-              printf '%s\n' ''
-              printf '%s\n' '# Remove leftover declarations/usages from the broken hide patch.'
-              printf '%s\n' 'bad_tokens = ['
-              printf '%s\n' '    "ksu_selinux_hide_enabled",'
-              printf '%s\n' '    "fake_status",'
-              printf '%s\n' '    "initialize_fake_status",'
-              printf '%s\n' '    "fake_status_initialize_key",'
-              printf '%s\n' ']'
-              printf '%s\n' ''
-              printf '%s\n' 'lines = []'
-              printf '%s\n' 'for line in s.splitlines():'
-              printf '%s\n' '    if any(tok in line for tok in bad_tokens):'
-              printf '%s\n' '        continue'
-              printf '%s\n' '    lines.append(line)'
-              printf '%s\n' ''
-              printf '%s\n' 's = "\n".join(lines) + "\n"'
-              printf '%s\n' ''
-              printf '%s\n' '# Extra cleanup for partially removed broken wrapper fragments.'
-              printf '%s\n' 'fragment = "ret = sel_open_handle_status(inode, filp);"'
-              printf '%s\n' 'if fragment in s:'
-              printf '%s\n' '    cleaned = []'
-              printf '%s\n' '    skip = False'
-              printf '%s\n' '    for line in s.splitlines():'
-              printf '%s\n' '        stripped = line.strip()'
-              printf '%s\n' '        if stripped == fragment:'
-              printf '%s\n' '            skip = True'
-              printf '%s\n' '            continue'
-              printf '%s\n' '        if skip and stripped == "return ret;":'
-              printf '%s\n' '            continue'
-              printf '%s\n' '        cleaned.append(line)'
-              printf '%s\n' '    s = "\n".join(cleaned) + "\n"'
-              printf '%s\n' ''
-              printf '%s\n' 'p.write_text(s)'
-            } > "$FIX_SCRIPT"
-
-            python3 "$FIX_SCRIPT"
-
-            echo "✅ Broken SELinux hide hook references removed"
-          else
-            echo "✅ No broken SELinux hide references found"
-          fi
-
-          echo "🔎 Remaining references check:"
+          echo "🔎 Remaining unresolved-symbol references:"
           grep -RInE 'ksu_selinux_hide_enabled|fake_status|initialize_fake_status|fake_status_initialize_key|my_sel_open_handle_status' "$SELINUXFS" || true
 
-          echo "🔎 Checking for leftover broken wrapper fragments:"
-          grep -nE 'ret = sel_open_handle_status\(inode, filp\)|return ret;' "$SELINUXFS" | head -20 || true
+          echo "🔎 Checking orphan CONFIG_KSU_SUSFS endif:"
+          grep -nE '#endif.*CONFIG_KSU_SUSFS' "$SELINUXFS" || true
 
-          echo "🔎 SELinux file excerpt around lines 220-260:"
-          nl -ba "$SELINUXFS" | sed -n '220,260p' || true
+          echo "🔎 sel_handle_status excerpt:"
+          grep -nE 'sel_open_handle_status|sel_handle_status_ops' "$SELINUXFS" || true
 
       - name: Apply Unicode Bypass
         if: ${{ inputs.UNICODE_BYPASS }}
