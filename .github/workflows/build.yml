@@ -1051,111 +1051,16 @@ jobs:
             exit 0
           fi
 
-          echo "🩹 Disabling Kleaf defconfig/protected checks in $BUILD_FILE"
+          echo "🩹 Removing protected module/export checks in $BUILD_FILE"
 
-          # Remove protected exports/module checks if present.
           sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
           sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' "$BUILD_FILE"
           sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' "$BUILD_FILE"
 
-          python3 - "$BUILD_FILE" <<'PY'
-          import re
-          import sys
-          
-          path = sys.argv[1]
-          
-          with open(path, "r", encoding="utf-8", errors="ignore") as f:
-              data = f.read()
-          
-          # Find kernel_build(...) blocks in a simple balanced-parentheses way.
-          def find_calls(text, func_name):
-              calls = []
-              token = func_name + "("
-              pos = 0
-              while True:
-                  start = text.find(token, pos)
-                  if start == -1:
-                      break
-          
-                  i = start + len(token)
-                  depth = 1
-                  in_str = None
-                  esc = False
-          
-                  while i < len(text):
-                      c = text[i]
-          
-                      if in_str:
-                          if esc:
-                              esc = False
-                          elif c == "\\":
-                              esc = True
-                          elif c == in_str:
-                              in_str = None
-                      else:
-                          if c in ("'", '"'):
-                              in_str = c
-                          elif c == "(":
-                              depth += 1
-                          elif c == ")":
-                              depth -= 1
-                              if depth == 0:
-                                  calls.append((start, i + 1))
-                                  pos = i + 1
-                                  break
-                      i += 1
-                  else:
-                      break
-          
-              return calls
-          
-          changed = False
-          calls = find_calls(data, "kernel_build")
-          
-          for start, end in reversed(calls):
-              block = data[start:end]
-          
-              if not re.search(r'name\s*=\s*"kernel_aarch64"', block):
-                  continue
-          
-              # Replace existing check_defconfig if present.
-              if re.search(r'check_defconfig\s*=', block):
-                  block2 = re.sub(
-                      r'check_defconfig\s*=\s*"[^"]*"\s*,?',
-                      'check_defconfig = "disabled",',
-                      block,
-                      count=1,
-                  )
-              else:
-                  # Insert after the name line.
-                  block2 = re.sub(
-                      r'(name\s*=\s*"kernel_aarch64"\s*,)',
-                      r'\1\n    check_defconfig = "disabled",',
-                      block,
-                      count=1,
-                  )
-          
-              if block2 != block:
-                  data = data[:start] + block2 + data[end:]
-                  changed = True
-          
-          if not changed:
-              print("⚠️ WARNING: kernel_build(name=\"kernel_aarch64\") not modified")
-          else:
-              with open(path, "w", encoding="utf-8") as f:
-                  f.write(data)
-              print("✅ check_defconfig disabled for kernel_aarch64")
-          PY
-
           echo "🔎 Relevant BUILD.bazel lines:"
-          grep -nE 'name[[:space:]]*=[[:space:]]*"kernel_aarch64"|check_defconfig|protected_module_names_list|protected_exports_list' "$BUILD_FILE" || true
+          grep -nE 'protected_module_names_list|protected_exports_list|check_defconfig|name[[:space:]]*=[[:space:]]*"kernel_aarch64"' "$BUILD_FILE" || true
 
-          if ! grep -q 'check_defconfig[[:space:]]*=[[:space:]]*"disabled"' "$BUILD_FILE"; then
-            echo "❌ ERROR: Failed to disable check_defconfig"
-            exit 1
-          fi
-
-          echo "✅ Kleaf defconfig/protected checks disabled"
+          echo "✅ Protected module/export checks removed where present"
 
       - name: Verify Important Config Entries
         shell: bash
@@ -1175,6 +1080,98 @@ jobs:
           fi
 
           echo "✅ Config sanity check passed"
+
+      - name: Normalize GKI Defconfig for Kleaf
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace
+
+          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
+
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ ERROR: $DEFCONFIG not found"
+            exit 1
+          fi
+
+          if [ ! -x "tools/bazel" ] || [ ! -f "common/BUILD.bazel" ]; then
+            echo "⏭️ Not a Kleaf/Bazel tree, skipping defconfig normalization"
+            exit 0
+          fi
+
+          echo "🧹 Normalizing $DEFCONFIG with Kleaf savedefconfig..."
+
+          # First run may fail because gki_defconfig is not normalized.
+          # The failure still writes a normalized defconfig under out/cache.
+          set +e
+          tools/bazel build \
+            --config=fast \
+            --show_result=0 \
+            --ui_event_filters=-DEBUG \
+            --verbose_failures \
+            //common:kernel_aarch64_config 2>&1 | tee normalize_defconfig_first.log
+          STATUS="${PIPESTATUS[0]}"
+          set -e
+
+          echo "ℹ️ First kernel_aarch64_config status: $STATUS"
+
+          NORMALIZED_DEFCONFIG="$(find out/cache -path "*/common/defconfig" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+
+          if [ -z "$NORMALIZED_DEFCONFIG" ] || [ ! -f "$NORMALIZED_DEFCONFIG" ]; then
+            echo "❌ ERROR: Could not find normalized defconfig in out/cache"
+            find out -path "*/defconfig" -type f -print 2>/dev/null | head -50 || true
+            exit 1
+          fi
+
+          echo "✅ Normalized defconfig found: $NORMALIZED_DEFCONFIG"
+
+          cp "$NORMALIZED_DEFCONFIG" "$DEFCONFIG"
+
+          echo "🔎 Important normalized defconfig entries:"
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_WQ_POWER_EFFICIENT_DEFAULT|CONFIG_KSU_FULL_NAME_FORMAT' "$DEFCONFIG" || true
+
+          if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$DEFCONFIG"; then
+            echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled in defconfig"
+            exit 1
+          fi
+
+          echo "🧪 Verifying normalized defconfig with second Kleaf config pass..."
+
+          tools/bazel build \
+            --config=fast \
+            --show_result=0 \
+            --ui_event_filters=-DEBUG \
+            --verbose_failures \
+            //common:kernel_aarch64_config 2>&1 | tee normalize_defconfig_second.log
+
+          GENERATED_CONFIG="$(find out -name ".config" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+
+          if [ -n "$GENERATED_CONFIG" ] && [ -f "$GENERATED_CONFIG" ]; then
+            echo "🔎 Important generated .config entries from: $GENERATED_CONFIG"
+            grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_KSU_FULL_NAME_FORMAT' "$GENERATED_CONFIG" || true
+
+            if ! grep -q '^CONFIG_KSU=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU=y missing in generated .config"
+              exit 1
+            fi
+
+            if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+              if ! grep -q '^CONFIG_KSU_SUSFS=y' "$GENERATED_CONFIG"; then
+                echo "❌ ERROR: CONFIG_KSU_SUSFS=y missing in generated .config"
+                exit 1
+              fi
+            fi
+
+            if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled in generated .config"
+              exit 1
+            fi
+          else
+            echo "⚠️ Generated .config not found; relying on Kleaf config pass"
+          fi
+
+          echo "✅ gki_defconfig normalized and accepted by Kleaf"
 
       - name: Pre-Build Disk Check
         shell: bash
@@ -1282,6 +1279,7 @@ jobs:
               --ui_event_filters=-DEBUG
               --show_progress_rate_limit=30
               --show_result=0
+              --verbose_failures
             )
 
             time tools/bazel build \
@@ -1447,7 +1445,7 @@ jobs:
           echo "✅ ZIP created: $ZIP_NAME ($ZIP_SIZE)"
 
       - name: Upload AK3 ZIP to GitHub Release
-        if: ${{ inputs.CREATE_RELEASE }}
+        if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ak3-${{ github.run_id }}
