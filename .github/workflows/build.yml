@@ -1360,7 +1360,7 @@ jobs:
 
       - name: Upload AK3 ZIP as Artifact
         if: ${{ inputs.CREATE_RELEASE != true }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
@@ -1535,7 +1535,7 @@ jobs:
 
       - name: Upload Build Log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build_log_${{ matrix.id }}_${{ github.run_id }}
           path: |
