@@ -21,7 +21,7 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 
 - ReSukiSU integration
 - Optional SUSFS
-- Optional Baseband Guard / LSM
+- Optional Baseband Guard / ✨LSM Do not enable as it does not work with 6.12 kernels !✨
 - Optional Netfilter + IPSet
 - Optional BBR + ECN
 - Optional Unicode bypass patch
@@ -49,7 +49,7 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 | `KSU_META` | ReSukiSU source: `branch/tag/commit` |
 | `SUSFS_META` | Empty = latest, `-1` = disabled, hash = pinned |
 | `MANAGER_SOURCE` | `MD3` or `MD3_SPOOF` |
-| `LSM` | Enable Baseband Guard | Do not enable as it does not work with 6.12 kernels !
+| `LSM` | Enable Baseband Guard | 
 | `NETFILTER` | Enable Netfilter/IPSet |
 | `BBR_ECN` | Enable BBR + ECN |
 | `CREATE_RELEASE` | Publish ZIP to GitHub Releases |
