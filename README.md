@@ -1,29 +1,62 @@
-# 🚀 OnePlus ReSukiSU Kernel Builder
+# 🚀 OnePlus BakaSU Kernel Builder
 
-GitHub Actions workflow for building flashable **ReSukiSU GKI kernels** for supported OnePlus devices.
+GitHub Actions workflow for building flashable **BakaSU GKI kernels** for supported OnePlus devices.
 
-It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, and packages the result as an **AnyKernel3 ZIP**.
+It syncs Android GKI sources, adds **BakaSU**, optionally applies **SUSFS**, and packages the result as an **AnyKernel3 ZIP**.
+
+> **BakaSU** is the project previously published as **ReSukiSU** (`ReSukiSU/ReSukiSU` → `Baka-SU/BakaSU`).
+> Same tree, new name — output ZIPs are now named `AK3_BakaSU_…`.
 
 ---
 
 ## 📱 Supported Devices
 
-| Device | ID | Codename | SoC |
-|---|---|---|---|
-| OnePlus 15 | `oneplus15` | `Infinity` | `sm8850` |
-| OnePlus 15T | `oneplus15t` | `Infinity` | `sm8850` |
-| OnePlus 15R | `oneplus15r` | `Infinity` | `sm8845` |
-| OnePlus Ace 6T | `ace6t` | `Infinity` | `sm8845` |
+| Device | ID | Codename | SoC | Default GKI release | Kernel |
+|---|---|---|---|---|---|
+| OnePlus 15 | `oneplus15` | `Infinity` | `sm8850` | `android16-6.12-2025-06` | 6.12.23 |
+| OnePlus 15T | `oneplus15t` | `Infinity` | `sm8850` | `android16-6.12-2025-06` | 6.12.23 |
+| OnePlus 15R | `oneplus15r` | `macan` | `sm8845` | `android16-6.12-2025-09` | 6.12.38 |
+| OnePlus Ace 6T | `ace6t` | `macan` | `sm8845` | `android16-6.12-2025-09` | 6.12.38 |
+| OnePlus Pad 3 Pro | `pad3pro` | `canoe` | `sm8850` | `android16-6.12-2025-12` | 6.12.58 |
+| OnePlus Pad 4 | `pad4` | `canoe` | `sm8850` | `android16-6.12-2025-12` | 6.12.58 |
+
+> This builder produces a **generic GKI** `kernel_aarch64` Image. The resulting
+> Image depends only on the **GKI release branch** and the **kernel suffix** —
+> the device selects nothing else, so every device on the same release gets a
+> byte-identical Image and only the ZIP name differs.
+>
+> Use `GKI_RELEASE` to build any device against a different release; the table
+> above is only the default. The September 2026 OTA moved OnePlus 15 and 15R to
+> **6.12.58 / android16-6** (a KMI generation bump), so pick
+> `android16-6.12-2025-12` if your firmware is on that OTA.
+
+### What `DEVICE=all` builds
+
+One kernel per GKI release, not one per device:
+
+| GKI release | Kernel | Flashable on |
+|---|---|---|
+| `android16-6.12-2025-06` | 6.12.23 | OnePlus 15 / 15T |
+| `android16-6.12-2025-09` | 6.12.38 | OnePlus 15R / Ace 6T |
+| `android16-6.12-2025-12` | **6.12.58** | all six devices |
+
+> ⚠️ A 6.12.58 kernel is **KMI generation 6**. Firmware still on 6.12.23 or
+> 6.12.38 ships KMI-5 `vendor_dlkm` modules, which will not load against it —
+> match the kernel to the firmware you are actually running.
 
 ---
 
 ## ✨ Features
 
-- ReSukiSU integration
+- BakaSU integration
 - Optional SUSFS
 - Optional Baseband Guard / ✨LSM Do not enable as it does not work with 6.12 kernels !✨
 - Optional Netfilter + IPSet
 - Optional BBR + ECN
+- Optional BBRv3 backport (KMI-safe on android16-6.12)
+- Net schedulers built in: `fq`, `fq_codel`, `cake`
+- Optional ADIOS block MQ I/O scheduler
+- Optional Sultan-derived power/memory tweaks (off by default)
 - Optional Unicode bypass patch
 - Flashable AnyKernel3 ZIP
 - GitHub Release or artifact output
@@ -46,23 +79,56 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 | Option | Description |
 |---|---|
 | `DEVICE` | Device to build, or `all` |
-| `KSU_META` | ReSukiSU source: `branch/tag/commit` |
+| `GKI_RELEASE` | `auto` = the device default above, or pin `android16-6.12-2025-06` (6.12.23) / `-2025-09` (6.12.38) / `-2025-12` (6.12.58) |
+| `KSU_META` | BakaSU source: `branch/tag/commit` |
 | `SUSFS_META` | Empty = latest, `-1` = disabled, hash = pinned |
-| `MANAGER_SOURCE` | `MD3` or `MD3_SPOOF` |
-| `LSM` | Enable Baseband Guard | 
+| `SUFFIX` | Kernel local version tail. **Empty = the stock suffix for the selected GKI release**, `-1` = disabled, or set your own |
+| `SUBLEVEL` | Override the kernel SUBLEVEL |
+| `LSM` | Enable Baseband Guard |
 | `NETFILTER` | Enable Netfilter/IPSet |
 | `BBR_ECN` | Enable BBR + ECN |
+| `BBR3` | Backport BBRv3 (patches `net/tcp`, adds `CONFIG_TCP_CONG_BBR3`) |
+| `ADIOS` | Add the ADIOS block MQ I/O scheduler and make it the default |
+| `SULTAN_TWEAKS` | Apply Sultan-derived power/memory patches from WildKernels (dry-run checked, off by default) |
 | `CREATE_RELEASE` | Publish ZIP to GitHub Releases |
+
+### Kernel suffix
+
+Left empty, `SUFFIX` resolves to the stock OnePlus tail for the selected release,
+so `uname -r` matches what the device shipped with:
+
+| GKI release | Resulting `uname -r` |
+|---|---|
+| `android16-6.12-2025-06` | `6.12.23-android16-5-gb2a876903b49-ab14541642-4k` |
+| `android16-6.12-2025-09` | `6.12.38-android16-5-g844001fb8721-ab14552068-4k` |
+| `android16-6.12-2025-12` | `6.12.58-android16-6-g925a103d123c-ab15898589-4k` |
+
+An unrecognised release falls back to a random OEM-shaped tail.
 
 ---
 
 ## 📦 Output
 
+Naming: `AK3_BakaSU_<ksuver>_<SUSFS-ver|noSUSFS>_<device>_<kernel>[_LSM].zip`
+
 Example ZIP:
-`AK3_ReSukiSU_43000_OnePlus15_6.12.0.zip`
+`AK3_BakaSU_43000_SUSFS-v2.3.0_OnePlus15-15T_6.12.23.zip`
 
 With LSM:
-`AK3_ReSukiSU_43000_OnePlus15_6.12.0_LSM.zip`
+`AK3_BakaSU_43000_SUSFS-v2.3.0_OnePlus15-15T_6.12.23_LSM.zip`
+
+SUSFS disabled:
+`AK3_BakaSU_43000_noSUSFS_OnePlus15-15T_6.12.23.zip`
+
+> Building `DEVICE=all` compiles each **unique** kernel once — one per GKI
+> release rather than one per device — so you get three ZIPs:
+>
+> - `…_OnePlus15-15T_6.12.23.zip`
+> - `…_OnePlus15R-Ace6T_6.12.38.zip`
+> - `…_OnePlus15-15T-15R-Ace6T-Pad3Pro-Pad4_6.12.58.zip`
+>
+> The kernel version is part of the name, so the 6.12.23 and 6.12.58 builds for
+> the same device never overwrite each other.
 
 ---
 
@@ -74,4 +140,4 @@ Use at your own risk. Keep a backup boot image and make sure fastboot/recovery a
 
 ## 🙏 Credits
 
-Thanks to the maintainers of Android GKI, ReSukiSU, SUSFS, AnyKernel3, Baseband Guard, and related community patches.
+Thanks to the maintainers of Android GKI, BakaSU, SUSFS, AnyKernel3, Baseband Guard, and related community patches.
